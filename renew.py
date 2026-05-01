@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""
-FreezeHost 自动续期（WARP + Discord Token 注入版）
-
-变量:
-  FREEZEHOST_DISCORD_TOKEN    Discord 用户 Token
-  TG_BOT_TOKEN                Telegram Bot Token
-  TG_CHAT_ID                  Telegram Chat ID
-"""
 
 import os
 import re
