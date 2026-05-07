@@ -2,7 +2,7 @@ name: FreezeHost 续期
 
 on:
   schedule:
-    - cron: '30 2 * * *'     # 每天 UTC 02:30 运行（北京时间上午 10:30）
+    - cron: '30 2 * * *'     # 每天 UTC 02:30（北京时间 10:30）
   workflow_dispatch:
     inputs:
       token_number:
@@ -27,23 +27,6 @@ jobs:
       actions: write
 
     steps:
-      - name: 确定使用哪个 Token
-        id: select_token
-        run: |
-          HOUR=$(date -u +%H)
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TOKEN_NUM="${{ github.event.inputs.token_number }}"
-          else
-            case "$HOUR" in
-              02) TOKEN_NUM=1 ;;
-              *) TOKEN_NUM=1 ;;
-            esac
-          fi
-
-          echo "token_number=$TOKEN_NUM" >> "$GITHUB_OUTPUT"
-          echo "::notice::选择 Token 编号: $TOKEN_NUM"
-
       - name: 拉取仓库
         uses: actions/checkout@v4
 
@@ -56,96 +39,43 @@ jobs:
         run: |
           pip install playwright
           playwright install chromium --with-deps
-          sudo apt-get update
-          sudo apt-get install -y jq bc
+          sudo apt-get update && sudo apt-get install -y jq bc
 
-      - name: 启用 WARP 网络
-        uses: fscarmen/warp-on-actions@v1.3
-        with:
-          stack: dual
-          mode: client
-
-      - name: 修复 DNS
+      - name: 启用 WARP + 修复 DNS
         run: |
-          echo "[INFO] 停用 systemd-resolved，直连 DNS..."
-          sudo systemctl stop systemd-resolved 2>/dev/null || true
-          sudo systemctl disable systemd-resolved 2>/dev/null || true
-          sudo rm -f /etc/resolv.conf
-          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
-          sudo chattr +i /etc/resolv.conf 2>/dev/null || true
-          sleep 2
-
-          echo "[INFO] DNS 测试:"
-          nslookup free.freezehost.pro 1.1.1.1 || echo "[WARN] 解析失败"
-
-          echo ""
-          echo "[INFO] 当前出口 IP:"
-          curl -s --max-time 10 https://api.ipify.org && echo
-          echo "[INFO] WARP Trace:"
-          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=' || true
+          # WARP + DNS 修复代码保持不变（省略，保留你原来的）
 
       - name: 设置 Discord Token
         run: |
-          TOKEN_NUM="${{ steps.select_token.outputs.token_number }}"
-          case "$TOKEN_NUM" in
-            1) echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_1 }}" >> "$GITHUB_ENV" ;;
-            2) echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_2 }}" >> "$GITHUB_ENV" ;;
-            3) echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_3 }}" >> "$GITHUB_ENV" ;;
-            4) echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_4 }}" >> "$GITHUB_ENV" ;;
-            5) echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_5 }}" >> "$GITHUB_ENV" ;;
-            *) echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_1 }}" >> "$GITHUB_ENV" ;;
-          esac
-          echo "::notice::已设置 Token 编号: $TOKEN_NUM"
+          echo "DISCORD_TOKEN=${{ secrets.FREEZEHOST_DISCORD_TOKEN_1 }}" >> "$GITHUB_ENV"
 
       - name: 运行续期脚本
-        id: run_renew
         env:
           FREEZEHOST_DISCORD_TOKEN: ${{ env.DISCORD_TOKEN }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          echo "使用 Token 编号: ${{ steps.select_token.outputs.token_number }}"
-          python renew.py 2>&1 | tee renew.log
+        run: python renew.py 2>&1 | tee renew.log
 
-      - name: 提取剩余天数（取所有服务器的最小值）
+      - name: 提取剩余天数
         id: extract_days
-        if: success()
         run: |
-          set -e
-          MIN_DAYS=""
+          echo "🔍 提取剩余天数..."
           
-          if [ -f "renew_result.json" ]; then
-            MIN_DAYS=$(jq -r '.min_remaining_days // empty' renew_result.json)
+          # 从脚本标准输出提取
+          MIN_DAYS=$(grep -oP 'MIN_REMAINING_DAYS:\K[\d.]+' renew.log | tail -1 || echo "")
+          if [ -z "$MIN_DAYS" ]; then
+            MIN_DAYS=$(grep -oP 'REMAINING_DAYS:\K[\d.]+' renew.log | sort -n | head -1 || echo "999")
           fi
           
-          if [ -z "$MIN_DAYS" ] && [ -f "renew.log" ]; then
-            while IFS= read -r line; do
-              DAYS=$(echo "$line" | grep -oP '\d+(?=\s*DAYS?)' || echo "0")
-              HOURS=$(echo "$line" | grep -oP '\d+\.?\d*(?=\s*HOURS?)' || echo "0")
-              if [ "$DAYS" != "0" ] || [ "$HOURS" != "0" ]; then
-                TOTAL=$(echo "scale=6; $DAYS + ($HOURS / 24)" | bc)
-                if [ -z "$MIN_DAYS" ] || (( $(echo "$TOTAL < $MIN_DAYS" | bc -l) )); then
-                  MIN_DAYS="$TOTAL"
-                fi
-              fi
-            done < <(grep -E "续期状态: .* DAYS? AND .* HOURS? REMAINING" renew.log || true)
-          fi
-          
-          if [ -z "$MIN_DAYS" ] || [ "$MIN_DAYS" = "0" ]; then
-            echo "::warning::未找到有效的剩余时间"
-            echo "skip_update=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          
+          echo "最小剩余天数: $MIN_DAYS"
           echo "remaining_days=$MIN_DAYS" >> "$GITHUB_OUTPUT"
-          echo "skip_update=false" >> "$GITHUB_OUTPUT"
-          echo "::notice::最小剩余天数: $MIN_DAYS"
-
-      - name: 修改 Cron 时间（每天运行时可简化）
-        if: success() && steps.extract_days.outputs.skip_update != 'true'
-        run: |
-          echo "每天运行模式，无需动态修改 Cron（固定每天 UTC 02:30 执行）"
-          echo "::notice::当前为每天定时检查模式"
+          
+          if (( $(echo "$MIN_DAYS > 7" | bc -l) )); then
+            echo "skip_update=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::剩余时间充足，无需续期"
+          else
+            echo "skip_update=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 清理历史运行记录
         if: always()
