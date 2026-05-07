@@ -200,12 +200,12 @@ jobs:
           echo "剩余天数: $REMAINING_DAYS"
           echo "Token 编号: $TOKEN_NUM"
 
-          # 计算下次运行时间（到期前 2 天）
-          if (( $(echo "$REMAINING_DAYS > 2" | bc -l) )); then
-            DAYS_UNTIL_NEXT_RUN=$(echo "$REMAINING_DAYS - 2" | bc)
+          # 计算下次运行时间（到期前 6 天）
+          if (( $(echo "$REMAINING_DAYS > 6" | bc -l) )); then
+            DAYS_UNTIL_NEXT_RUN=$(echo "$REMAINING_DAYS - 6" | bc)
           else
             DAYS_UNTIL_NEXT_RUN=0.5
-            echo "::warning::剩余时间不足 2 天，12 小时后重试"
+            echo "::warning::剩余时间不足 6 天，12 小时后重试"
           fi
 
           DAYS_INT=$(printf "%.0f" "$DAYS_UNTIL_NEXT_RUN")
