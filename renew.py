@@ -6,7 +6,6 @@ import sys
 import json
 import base64
 import traceback
-from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 from pathlib import Path
@@ -81,9 +80,7 @@ def remaining_total_days(text: str) -> float | None:
     hours = float(h.group(1)) if h else 0.0
     return days + hours / 24.0
 
-# ==================== 下面函数保持不变 ====================
-def extract_email(page): 
-    # ...（保持原样，代码较长，这里省略中间不变部分，你可以直接从你原来的文件中复制这部分）
+def extract_email(page) -> str | None:
     try:
         log_info("打开 Settings 页面获取邮箱...")
         page.goto(f"{BASE_URL}/settings", wait_until="networkidle")
@@ -108,7 +105,8 @@ def extract_email(page):
             log_info(f"邮箱获取成功: {email}")
             return email
         return None
-    except:
+    except Exception as e:
+        log_warn(f"获取邮箱失败: {e}")
         return None
 
 def send_tg(caption: str, image_bytes: bytes | None = None):
@@ -160,8 +158,7 @@ def check_site_down(page) -> bool:
     try:
         return page.evaluate("""() => {
             const body = document.body ? document.body.innerText : '';
-            return body.includes('CONNECTION TO THE MANAGEMENT SERVICES LOST') || 
-                   (body.includes('Retrying in') && body.includes('Retry Now'));
+            return body.includes('CONNECTION TO THE MANAGEMENT SERVICES LOST') || (body.includes('Retrying in') && body.includes('Retry Now'));
         }""")
     except:
         return False
@@ -172,14 +169,12 @@ def wait_for_site_ready(page) -> bool:
         try:
             page.goto(BASE_URL, wait_until="domcontentloaded", timeout=TIMEOUT)
         except:
-            if attempt < MAX_SITE_RETRIES:
-                page.wait_for_timeout(RETRY_WAIT)
+            if attempt < MAX_SITE_RETRIES: page.wait_for_timeout(RETRY_WAIT)
             continue
         page.wait_for_timeout(3000)
         if check_site_down(page):
             take_screenshot(page, f"site-down-{attempt}")
-            if attempt < MAX_SITE_RETRIES:
-                page.wait_for_timeout(RETRY_WAIT)
+            if attempt < MAX_SITE_RETRIES: page.wait_for_timeout(RETRY_WAIT)
             continue
         try:
             if page.locator('span.text-lg:has-text("Login with Discord")').is_visible():
@@ -189,11 +184,6 @@ def wait_for_site_ready(page) -> bool:
             pass
         return True
     return False
-
-def handle_oauth_page(page):
-    log_info("进入 OAuth 授权页处理")
-    page.wait_for_timeout(2000)
-    # （原逻辑保持不变，省略以减少长度）
 
 def discover_server_ids(page) -> list[str]:
     for attempt in range(3):
@@ -216,8 +206,7 @@ def discover_server_ids(page) -> list[str]:
         if all_ids:
             log_info(f"发现 {len(all_ids)} 台服务器")
             return sorted(all_ids)
-        if attempt < 2:
-            page.wait_for_timeout(3000)
+        if attempt < 2: page.wait_for_timeout(3000)
     return []
 
 def process_server(page, server_id: str) -> dict:
@@ -230,6 +219,7 @@ def process_server(page, server_id: str) -> dict:
             const el = document.getElementById('renewal-status-console');
             return el ? el.innerText.trim() : null;
         }""")
+        log_info(f"[{server_id}] 续期状态: {status_text or '(空)'}")
 
         remaining_before = parse_remaining(status_text)
         total_days = remaining_total_days(status_text)
@@ -238,12 +228,14 @@ def process_server(page, server_id: str) -> dict:
         # ==================== 修改重点：小于7天才续期 ====================
         if total_days is not None and total_days >= 7:
             log_info(f"[{server_id}] 剩余 {total_days:.1f} 天 (>=7天)，无需续期")
+            print(f"REMAINING_DAYS:{total_days:.2f}")   # 供 Workflow 提取
             result.update(status="cooldown", emoji="⏳", status_label="冷却期", detail=remaining_before or f"{total_days:.1f}天")
             return result
 
         log_info(f"[{server_id}] 剩余 {total_days:.1f} 天 < 7天，开始续期...")
+        print(f"REMAINING_DAYS:{total_days:.2f}")
 
-        # 继续原续期逻辑（查找 renew 链接并执行）
+        # 续期逻辑（简化版）
         renew_href = page.evaluate("""() => {
             const rl = document.getElementById('renew-link-modal');
             if (rl) { const h = rl.getAttribute('href'); if (h && h !== '#') return {href:h}; }
@@ -285,7 +277,6 @@ def run():
 
         display_name = "未知用户"
         try:
-            # IP + 登录流程（保持原样）
             log_info("验证出口 IP...")
             try:
                 ip = json.loads(page.goto("https://api.ipify.org?format=json", wait_until="domcontentloaded").text()).get("ip", "?")
@@ -305,6 +296,7 @@ def run():
                 pass
 
             page.click('span.text-lg:has-text("Login with Discord")', timeout=15000)
+
             confirm_btn = page.locator("button#confirm-login")
             confirm_btn.wait_for(state="visible")
             confirm_btn.click()
@@ -320,10 +312,9 @@ def run():
                 document.body.removeChild(f);
             }""", DISCORD_TOKEN)
 
-            page.reload()
+            page.reload(wait_until="domcontentloaded")
             page.wait_for_timeout(5000)
 
-            # Dashboard
             page.wait_for_url(lambda u: "/dashboard" in u, timeout=30000)
             log_info("登录成功")
 
@@ -336,22 +327,24 @@ def run():
                 send_tg(f"用户：{display_name}\n⚠️ 未发现服务器", buf)
                 return
 
-            results, screenshots = [], []
+            results = []
             for sid in server_ids:
                 res = process_server(page, sid)
                 results.append(res)
-                buf = take_screenshot(page, f"server-{sid[:8]}")
-                if buf: screenshots.append(buf)
 
-            final_img = screenshots[0] if len(screenshots) == 1 else merge_screenshots(browser, screenshots) if screenshots else None
+            # 输出最小剩余天数供 Workflow 使用
+            days_list = [remaining_total_days(r.get("before", "")) or 999 for r in results]
+            min_days = min(days_list) if days_list else 999
+            print(f"MIN_REMAINING_DAYS:{min_days:.2f}")
+            log_info(f"最小剩余天数: {min_days:.2f} 天")
 
+            # TG 推送
             lines = [f"服务器: {r['server_id']} | {r['emoji']}{r['status_label']} {r.get('detail','')}" for r in results]
-            send_tg("\n".join([f"用户：{display_name}", *lines, "", "FreezeHost Auto Renew"]), final_img)
+            send_tg("\n".join([f"用户：{display_name}", *lines, "", "FreezeHost Auto Renew"]))
 
         except Exception as e:
-            buf = take_screenshot(page, "fatal-error")
-            send_tg(f"用户：{display_name}\n❌ 异常: {e}", buf)
-            raise
+            log_error(f"运行异常: {e}")
+            traceback.print_exc()
         finally:
             browser.close()
 
