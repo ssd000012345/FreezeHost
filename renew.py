@@ -622,6 +622,21 @@ def run():
                          else merge_screenshots(browser, screenshots) if screenshots
                          else None)
 
+            # ── 写入 renew_result.json 供 workflow 读取 ──
+            try:
+                all_days = []
+                for r in results:
+                    after_days = remaining_total_days(r.get("after") or "")
+                    before_days = remaining_total_days(r.get("before") or "")
+                    d = after_days or before_days
+                    if d:
+                        all_days.append(d)
+                if all_days:
+                    with open("renew_result.json", "w") as f:
+                        json.dump({"min_remaining_days": min(all_days)}, f)
+            except Exception:
+                pass
+
             # ── TG 推送（完整信息） ──────────────────────
             lines = []
             for r in results:
